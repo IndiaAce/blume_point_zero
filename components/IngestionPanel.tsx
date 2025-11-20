@@ -1,9 +1,9 @@
-import React, { useState } from 'react';
-import { Plus, Rss, FileText, Loader2 } from 'lucide-react';
+import React, { useState, useRef } from 'react';
+import { Plus, Rss, FileText, Loader2, Upload, FileJson } from 'lucide-react';
 import { FeedItem } from '../types';
 
 interface IngestionPanelProps {
-  onIngest: (item: FeedItem) => void;
+  onIngest: (items: FeedItem[]) => void;
   isAnalyzing: boolean;
 }
 
@@ -15,25 +15,68 @@ Analysts also observed overlaps with 'AppleJeus' campaigns.
 `;
 
 const IngestionPanel: React.FC<IngestionPanelProps> = ({ onIngest, isAnalyzing }) => {
-  const [inputType, setInputType] = useState<'rss' | 'text'>('text');
+  const [inputType, setInputType] = useState<'rss' | 'text' | 'file'>('text');
   const [content, setContent] = useState('');
-  const [url, setUrl] = useState('https://feeds.feedburner.com/TheHackersNews'); // Example, though CORS usually blocks real fetch in browser
+  const [url, setUrl] = useState('https://feeds.feedburner.com/TheHackersNews');
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [selectedFiles, setSelectedFiles] = useState<FileList | null>(null);
 
-  const handleIngest = () => {
-    if (inputType === 'text' && !content.trim()) return;
-    
-    const newItem: FeedItem = {
-      id: crypto.randomUUID(),
-      title: inputType === 'rss' ? 'Simulated RSS Feed Entry' : 'Manual Text Input',
-      content: inputType === 'text' ? content : "Simulated fetch content from " + url,
-      sourceName: inputType === 'rss' ? 'RSS Feed' : 'Analyst Input',
-      url: inputType === 'rss' ? url : '',
-      timestamp: new Date().toISOString(),
-      processed: false
-    };
-
-    onIngest(newItem);
-    setContent(''); // Clear text input
+  const handleIngest = async () => {
+    if (inputType === 'text') {
+      if (!content.trim()) return;
+      const newItem: FeedItem = {
+        id: crypto.randomUUID(),
+        title: 'Manual Analyst Input',
+        content: content,
+        sourceName: 'Analyst Input',
+        url: '',
+        timestamp: new Date().toISOString(),
+        processed: false
+      };
+      onIngest([newItem]);
+      setContent('');
+    } else if (inputType === 'file' && selectedFiles) {
+      const items: FeedItem[] = [];
+      
+      for (let i = 0; i < selectedFiles.length; i++) {
+        const file = selectedFiles[i];
+        const text = await file.text();
+        try {
+          const json = JSON.parse(text);
+          // Handle Array of items or single item (Feedly/Generic JSON support)
+          const entries = Array.isArray(json) ? json : (json.items || [json]);
+          
+          entries.forEach((entry: any) => {
+             items.push({
+               id: crypto.randomUUID(),
+               title: entry.title || entry.header || file.name,
+               content: entry.content || entry.summary || entry.text || JSON.stringify(entry),
+               sourceName: entry.origin?.title || 'File Upload',
+               url: entry.canonicalUrl || '',
+               timestamp: new Date().toISOString(),
+               processed: false
+             });
+          });
+        } catch (e) {
+          console.error("Failed to parse file", file.name);
+        }
+      }
+      onIngest(items);
+      setSelectedFiles(null);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    } else if (inputType === 'rss') {
+       // Simulating RSS fetch
+       const newItem: FeedItem = {
+        id: crypto.randomUUID(),
+        title: 'Simulated RSS Feed Entry',
+        content: "Simulated fetch content from " + url,
+        sourceName: 'RSS Feed',
+        url: url,
+        timestamp: new Date().toISOString(),
+        processed: false
+      };
+      onIngest([newItem]);
+    }
   };
 
   const loadSample = () => {
@@ -48,24 +91,30 @@ const IngestionPanel: React.FC<IngestionPanelProps> = ({ onIngest, isAnalyzing }
           <Plus className="w-5 h-5 text-cyber-accent" />
           Data Ingestion
         </h2>
-        <div className="flex gap-2 bg-gray-800 p-1 rounded-lg">
+        <div className="flex gap-1 bg-gray-800 p-1 rounded-lg">
           <button 
             onClick={() => setInputType('text')}
-            className={`px-3 py-1 rounded-md text-sm flex items-center gap-2 transition-colors ${inputType === 'text' ? 'bg-gray-700 text-white shadow' : 'text-gray-400 hover:text-white'}`}
+            className={`px-2 py-1 rounded-md text-xs flex items-center gap-1 transition-colors ${inputType === 'text' ? 'bg-gray-700 text-white shadow' : 'text-gray-400 hover:text-white'}`}
           >
-            <FileText className="w-4 h-4" /> Raw Text
+            <FileText className="w-3 h-3" /> Text
+          </button>
+          <button 
+            onClick={() => setInputType('file')}
+            className={`px-2 py-1 rounded-md text-xs flex items-center gap-1 transition-colors ${inputType === 'file' ? 'bg-gray-700 text-white shadow' : 'text-gray-400 hover:text-white'}`}
+          >
+            <Upload className="w-3 h-3" /> Upload
           </button>
           <button 
             onClick={() => setInputType('rss')}
-            className={`px-3 py-1 rounded-md text-sm flex items-center gap-2 transition-colors ${inputType === 'rss' ? 'bg-gray-700 text-white shadow' : 'text-gray-400 hover:text-white'}`}
+            className={`px-2 py-1 rounded-md text-xs flex items-center gap-1 transition-colors ${inputType === 'rss' ? 'bg-gray-700 text-white shadow' : 'text-gray-400 hover:text-white'}`}
           >
-            <Rss className="w-4 h-4" /> Feed Connector
+            <Rss className="w-3 h-3" /> Feed
           </button>
         </div>
       </div>
 
       <div className="space-y-4">
-        {inputType === 'text' ? (
+        {inputType === 'text' && (
           <div>
             <textarea
               value={content}
@@ -82,7 +131,28 @@ const IngestionPanel: React.FC<IngestionPanelProps> = ({ onIngest, isAnalyzing }
                 </button>
              </div>
           </div>
-        ) : (
+        )}
+
+        {inputType === 'file' && (
+          <div className="h-32 bg-gray-900 border-2 border-dashed border-gray-700 rounded flex flex-col items-center justify-center text-gray-400 hover:border-cyber-accent transition-colors">
+             <input 
+               type="file" 
+               multiple
+               accept=".json,.txt"
+               ref={fileInputRef}
+               onChange={(e) => setSelectedFiles(e.target.files)}
+               className="hidden"
+               id="file-upload"
+             />
+             <label htmlFor="file-upload" className="cursor-pointer flex flex-col items-center gap-2">
+                <FileJson className="w-8 h-8 text-gray-500" />
+                <span className="text-sm">{selectedFiles ? `${selectedFiles.length} file(s) selected` : 'Drop JSON files or Click to Upload'}</span>
+                <span className="text-xs text-gray-600">Supports Feedly Exports & CTI JSON</span>
+             </label>
+          </div>
+        )}
+
+        {inputType === 'rss' && (
           <div>
             <label className="block text-xs text-gray-400 mb-1">Feed URL</label>
             <input
@@ -92,9 +162,6 @@ const IngestionPanel: React.FC<IngestionPanelProps> = ({ onIngest, isAnalyzing }
               className="w-full bg-gray-900 text-gray-200 p-2 rounded border border-gray-700 focus:border-cyber-accent focus:outline-none font-mono text-sm"
               placeholder="https://..."
             />
-            <p className="text-xs text-yellow-600 mt-2">
-              Note: Direct RSS fetching often blocked by CORS in browsers. This demo simulates the fetch step for RSS.
-            </p>
           </div>
         )}
 
@@ -102,7 +169,7 @@ const IngestionPanel: React.FC<IngestionPanelProps> = ({ onIngest, isAnalyzing }
           onClick={handleIngest}
           disabled={isAnalyzing || (inputType === 'text' && !content)}
           className={`w-full py-2 px-4 rounded font-medium flex items-center justify-center gap-2 transition-all
-            ${isAnalyzing || (inputType === 'text' && !content)
+            ${isAnalyzing
               ? 'bg-gray-700 text-gray-500 cursor-not-allowed' 
               : 'bg-cyber-accent hover:bg-blue-600 text-white shadow-lg shadow-blue-900/20'
             }`}
@@ -110,11 +177,11 @@ const IngestionPanel: React.FC<IngestionPanelProps> = ({ onIngest, isAnalyzing }
           {isAnalyzing ? (
             <>
               <Loader2 className="w-5 h-5 animate-spin" />
-              Extracting Entities with Gemini...
+              Analyzing & Normalizing...
             </>
           ) : (
             <>
-              Start Extraction & Correlation
+              Process Intelligence
             </>
           )}
         </button>

@@ -24,16 +24,28 @@ const ForceGraph: React.FC<ForceGraphProps> = ({ entities, relationships, onNode
     const svg = d3.select(svgRef.current)
       .attr("width", width)
       .attr("height", height)
-      .attr("viewBox", [0, 0, width, height]);
+      .attr("viewBox", [0, 0, width, height])
+      .style("cursor", "grab");
+
+    const g = svg.append("g");
+
+    // Add Zoom behavior
+    const zoom = d3.zoom<SVGSVGElement, unknown>()
+        .scaleExtent([0.1, 5]) 
+        .on("zoom", (event) => {
+            g.attr("transform", event.transform);
+        });
+
+    svg.call(zoom)
+       .on("dblclick.zoom", null); 
 
     // Process data for D3
-    // D3 modifies objects in place, so we deep copy to avoid React state mutation issues
     const nodes = entities.map(e => ({ ...e }));
     const links = relationships.map(r => ({ ...r }));
 
     const simulation = d3.forceSimulation(nodes as any)
-      .force("link", d3.forceLink(links).id((d: any) => d.id).distance(150))
-      .force("charge", d3.forceManyBody().strength(-400))
+      .force("link", d3.forceLink(links).id((d: any) => d.id).distance(100))
+      .force("charge", d3.forceManyBody().strength(-300))
       .force("center", d3.forceCenter(width / 2, height / 2))
       .force("collide", d3.forceCollide().radius(30));
 
@@ -46,51 +58,67 @@ const ForceGraph: React.FC<ForceGraphProps> = ({ entities, relationships, onNode
         case EntityType.DOMAIN: return "#06b6d4"; // Cyan
         case EntityType.CVE: return "#eab308"; // Yellow
         case EntityType.TTP: return "#a855f7"; // Purple
+        case EntityType.REPORT: return "#ffffff"; // White for Reports
         default: return "#94a3b8"; // Gray
       }
     };
 
-    const link = svg.append("g")
+    const link = g.append("g")
       .attr("stroke", "#475569")
-      .attr("stroke-opacity", 0.6)
+      .attr("stroke-opacity", 0.4)
       .selectAll("line")
       .data(links)
       .join("line")
-      .attr("stroke-width", (d: any) => Math.sqrt(d.weight || 1) + 1);
+      .attr("stroke-width", (d: any) => Math.sqrt(d.weight || 1));
 
-    const node = svg.append("g")
+    const node = g.append("g")
       .attr("stroke", "#fff")
       .attr("stroke-width", 1.5)
       .selectAll("g")
       .data(nodes)
       .join("g")
+      .attr("cursor", "pointer")
       .call(d3.drag<SVGGElement, any>()
         .on("start", dragstarted)
         .on("drag", dragged)
         .on("end", dragended)
       )
       .on("click", (event, d) => {
-        // Find original entity to pass back
+        event.stopPropagation();
         const original = entities.find(e => e.id === d.id);
         if (original) onNodeClick(original);
       });
 
-    // Node Circles
-    node.append("circle")
-      .attr("r", (d: any) => d.type === EntityType.THREAT_ACTOR ? 12 : 8)
-      .attr("fill", (d: any) => colorScale(d.type))
-      .attr("cursor", "pointer");
+    // Draw shapes based on type
+    node.each(function(d: any) {
+        const el = d3.select(this);
+        if (d.type === EntityType.REPORT) {
+            // Draw Square for Reports
+            el.append("rect")
+              .attr("width", 20)
+              .attr("height", 20)
+              .attr("x", -10)
+              .attr("y", -10)
+              .attr("fill", colorScale(d.type));
+        } else {
+            // Draw Circle for others
+            el.append("circle")
+              .attr("r", d.type === EntityType.THREAT_ACTOR ? 14 : 8)
+              .attr("fill", colorScale(d.type));
+        }
+    });
 
     // Node Labels
     node.append("text")
-      .text((d: any) => d.name)
+      .text((d: any) => d.name.length > 20 ? d.name.substring(0,17) + "..." : d.name)
       .attr("x", 15)
       .attr("y", 4)
       .attr("fill", "#e2e8f0")
       .attr("stroke", "none")
       .attr("font-size", "10px")
       .attr("font-family", "monospace")
-      .style("pointer-events", "none"); // Let clicks pass through to circle
+      .style("pointer-events", "none")
+      .style("text-shadow", "2px 2px 4px #000");
 
     simulation.on("tick", () => {
       link
@@ -107,6 +135,7 @@ const ForceGraph: React.FC<ForceGraphProps> = ({ entities, relationships, onNode
       if (!event.active) simulation.alphaTarget(0.3).restart();
       event.subject.fx = event.subject.x;
       event.subject.fy = event.subject.y;
+      svg.style("cursor", "grabbing");
     }
 
     function dragged(event: any) {
@@ -118,9 +147,9 @@ const ForceGraph: React.FC<ForceGraphProps> = ({ entities, relationships, onNode
       if (!event.active) simulation.alphaTarget(0);
       event.subject.fx = null;
       event.subject.fy = null;
+      svg.style("cursor", "grab");
     }
 
-    // Clean up
     return () => {
       simulation.stop();
     };
@@ -128,7 +157,7 @@ const ForceGraph: React.FC<ForceGraphProps> = ({ entities, relationships, onNode
 
   return (
     <div ref={containerRef} className="w-full h-full bg-cyber-dark overflow-hidden rounded-lg border border-gray-800 relative">
-      <svg ref={svgRef} className="w-full h-full"></svg>
+      <svg ref={svgRef} className="w-full h-full outline-none"></svg>
       {entities.length === 0 && (
         <div className="absolute inset-0 flex items-center justify-center text-gray-500 pointer-events-none">
           <p>Ingest data to visualize the Threat Graph</p>

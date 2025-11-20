@@ -6,7 +6,8 @@ export enum EntityType {
   CVE = 'CVE',
   TTP = 'TTP', // Tactics, Techniques, and Procedures
   ORGANIZATION = 'ORGANIZATION',
-  LOCATION = 'LOCATION'
+  LOCATION = 'LOCATION',
+  REPORT = 'REPORT' // New Node Type for Origin Tracking
 }
 
 export interface Entity {
@@ -22,6 +23,15 @@ export interface Entity {
   sectors?: string[]; // e.g. Financial, Defense, Healthcare
   tools?: string[]; // e.g. Cobalt Strike, Mimikatz
   sources: string[]; // IDs of feeds/articles
+}
+
+export interface Report {
+  id: string;
+  title: string;
+  source: string;
+  timestamp: string;
+  url?: string;
+  summary?: string;
 }
 
 export interface Relationship {

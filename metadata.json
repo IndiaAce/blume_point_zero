@@ -1,0 +1,5 @@
+{
+  "name": "blume_alpha",
+  "description": "A modular Threat Intelligence Platform (TIP) leveraging Gemini for AI-driven Entity Extraction, Normalization, and Correlation. Visualizes relationships between Threat Actors, IOCs, and TTPs from various data feeds.",
+  "requestFramePermissions": []
+}

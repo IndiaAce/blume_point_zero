@@ -1,5 +1,5 @@
-import React from 'react';
-import { X, ShieldAlert, Hash, Globe, Bug, Server, Fingerprint, Target, Briefcase } from 'lucide-react';
+import React, { useState } from 'react';
+import { X, ShieldAlert, Hash, Globe, Bug, Server, Fingerprint, Target, Briefcase, Sparkles, Loader2 } from 'lucide-react';
 import { Entity, EntityType, Relationship } from '../types';
 
 interface EntityDetailsProps {
@@ -7,10 +7,19 @@ interface EntityDetailsProps {
   relationships: Relationship[];
   allEntities: Entity[];
   onClose: () => void;
+  onEnrich: (entity: Entity) => Promise<void>;
 }
 
-const EntityDetails: React.FC<EntityDetailsProps> = ({ entity, relationships, allEntities, onClose }) => {
+const EntityDetails: React.FC<EntityDetailsProps> = ({ entity, relationships, allEntities, onClose, onEnrich }) => {
+  const [isEnriching, setIsEnriching] = useState(false);
+
   if (!entity) return null;
+
+  const handleEnrichClick = async () => {
+      setIsEnriching(true);
+      await onEnrich(entity);
+      setIsEnriching(false);
+  };
 
   const relatedEntities = relationships
     .filter(r => r.source === entity.id || r.target === entity.id)
@@ -46,21 +55,48 @@ const EntityDetails: React.FC<EntityDetailsProps> = ({ entity, relationships, al
 
       <div className="flex-1 overflow-y-auto p-6 space-y-6">
         
-        <div>
-          <label className="text-xs uppercase tracking-wider text-gray-500 font-semibold">Identity</label>
-          <h1 className="text-3xl font-mono font-bold text-cyber-accent mt-1 tracking-tight break-words">{entity.name}</h1>
-          
-          <div className="mt-3 flex flex-wrap gap-2">
-            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-700 text-gray-200 border border-gray-600">
-              {entity.type}
-            </span>
-            {entity.aliases && entity.aliases.map(alias => (
-              <span key={alias} className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-800 text-gray-400 border border-gray-700 border-dashed">
-                AKA: {alias}
-              </span>
-            ))}
-          </div>
+        <div className="flex justify-between items-start">
+            <div>
+                <label className="text-xs uppercase tracking-wider text-gray-500 font-semibold">Identity</label>
+                <h1 className="text-3xl font-mono font-bold text-cyber-accent mt-1 tracking-tight break-words">{entity.name}</h1>
+                
+                <div className="mt-3 flex flex-wrap gap-2">
+                    <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-700 text-gray-200 border border-gray-600">
+                    {entity.type}
+                    </span>
+                    {entity.isEnriched && (
+                        <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-purple-900/30 text-purple-300 border border-purple-800 flex gap-1">
+                            <Sparkles className="w-3 h-3" /> Enriched
+                        </span>
+                    )}
+                    {entity.aliases && entity.aliases.map(alias => (
+                    <span key={alias} className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-800 text-gray-400 border border-gray-700 border-dashed">
+                        AKA: {alias}
+                    </span>
+                    ))}
+                </div>
+            </div>
         </div>
+
+        {/* ENRICHMENT ACTION */}
+        {!entity.isEnriched && entity.type !== EntityType.REPORT && (
+            <div className="p-4 bg-gradient-to-r from-blue-900/20 to-purple-900/20 border border-blue-800/50 rounded-lg">
+                <div className="flex items-center justify-between">
+                    <div className="text-sm text-gray-300">
+                        <p className="font-semibold text-white">Run Deep Analysis?</p>
+                        <p className="text-xs opacity-70">Query external knowledge base for TTPs & history.</p>
+                    </div>
+                    <button 
+                        onClick={handleEnrichClick}
+                        disabled={isEnriching}
+                        className="px-3 py-1.5 bg-cyber-accent hover:bg-blue-600 text-white rounded text-xs font-bold flex items-center gap-2 transition-all shadow-lg shadow-blue-900/30"
+                    >
+                        {isEnriching ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+                        Enrich
+                    </button>
+                </div>
+            </div>
+        )}
 
         {/* Enrichment Data: Sectors */}
         {entity.sectors && entity.sectors.length > 0 && (
@@ -97,7 +133,7 @@ const EntityDetails: React.FC<EntityDetailsProps> = ({ entity, relationships, al
         {entity.description && (
           <div className="bg-gray-800/30 p-5 rounded-lg border border-gray-700">
             <label className="text-xs uppercase tracking-wider text-cyber-accent font-semibold mb-3 block flex items-center gap-2">
-              <ActivityIcon /> Intelligence Dossier (Aggregated)
+              <ActivityIcon /> Intelligence Dossier
             </label>
             <div className="text-sm text-gray-300 leading-relaxed whitespace-pre-line font-sans">
               {entity.description}

@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    ports:
+      - "3000:3000"
+    volumes:
+      # Mount current directory to /app to allow editing files on host
+      - ./:/app
+      # Prevent container node_modules from being overwritten by host
+      - /app/node_modules
+      # Persist data folder
+      - ./data:/app/data
+    environment:
+      - API_KEY=${API_KEY}
+    restart: unless-stopped

@@ -1,94 +1,57 @@
 import { GoogleGenAI, Type, Schema } from "@google/genai";
-import { EntityType, AnalysisResult, Entity, Relationship } from "../types";
+import { EntityType, Entity } from "../types";
 
-// Initialize Gemini Client
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+// Helper to get API Key from window (injected by Docker)
+const getApiKey = (): string => {
+  if (typeof window !== 'undefined' && (window as any).__ENV__?.API_KEY) {
+    return (window as any).__ENV__.API_KEY;
+  }
+  return process.env.API_KEY || '';
+};
+
+// Lazy initialization to handle key not being present immediately
+const getAI = () => {
+    const key = getApiKey();
+    if (!key) return null;
+    return new GoogleGenAI({ apiKey: key });
+}
 
 const MODEL_NAME = 'gemini-2.5-flash';
 
-// --- NER & NLP Configuration ---
-// This schema defines exactly what the AI should extract from the unstructured text.
-const entitySchema: Schema = {
+// Schema for targeted enrichment
+const enrichmentSchema: Schema = {
   type: Type.OBJECT,
   properties: {
-    summary: {
-      type: Type.STRING,
-      description: "A brief executive summary of the threat intelligence report.",
-    },
-    entities: {
-      type: Type.ARRAY,
-      items: {
-        type: Type.OBJECT,
-        properties: {
-          name: { type: Type.STRING, description: "The primary name of the entity (e.g., 'Lazarus Group')." },
-          aliases: { 
-            type: Type.ARRAY, 
-            items: { type: Type.STRING },
-            description: "Known aliases or alternative names found in text (e.g., 'APT38', 'Hidden Cobra')." 
-          },
-          type: { 
-            type: Type.STRING, 
-            enum: Object.values(EntityType),
-            description: "The classification of the entity." 
-          },
-          sectors: {
-            type: Type.ARRAY,
-            items: { type: Type.STRING },
-            description: "Industries or sectors targeted by this entity (e.g., 'Financial', 'Aerospace')."
-          },
-          tools: {
-            type: Type.ARRAY,
-            items: { type: Type.STRING },
-            description: "Specific tools, malware families, or utilities used by this entity."
-          },
-          confidenceScore: { type: Type.NUMBER, description: "Confidence level 0-1." },
-          description: { type: Type.STRING, description: "Specific details, capabilities, or observations about this entity from the text." }
-        },
-        required: ["name", "type", "confidenceScore"]
-      }
-    },
-    relationships: {
-      type: Type.ARRAY,
-      items: {
-        type: Type.OBJECT,
-        properties: {
-          sourceEntityName: { type: Type.STRING },
-          targetEntityName: { type: Type.STRING },
-          relationshipType: { type: Type.STRING, description: "e.g., USES, TARGETS, COMMUNICATES_WITH, EXPLOITS" }
-        },
-        required: ["sourceEntityName", "targetEntityName", "relationshipType"]
-      }
-    }
+    description: { type: Type.STRING, description: "A detailed technical biography of the threat entity." },
+    aliases: { type: Type.ARRAY, items: { type: Type.STRING } },
+    sectors: { type: Type.ARRAY, items: { type: Type.STRING } },
+    tools: { type: Type.ARRAY, items: { type: Type.STRING } },
+    suspectedOrigin: { type: Type.STRING, description: "Country or region of origin if known." }
   },
-  required: ["summary", "entities", "relationships"]
+  required: ["description", "sectors", "tools"]
 };
 
-export const analyzeThreatText = async (text: string, sourceId: string): Promise<AnalysisResult> => {
+/**
+ * ENRICHMENT ONLY
+ * This function is called manually by the user to "ask the AI" about a specific node 
+ * that was found by our internal ML engine.
+ */
+export const enrichEntityProfile = async (entity: Entity): Promise<Partial<Entity>> => {
   try {
-    // The System Prompt defines the behavior of the NLP Engine
-    const prompt = `
-      You are an advanced Cyber Threat Intelligence (CTI) Engine performing Named Entity Recognition (NER) and Relation Extraction.
-      Your goal is to extract structured data to build and enrich profiles on Threat Actors, Malware, and Infrastructure.
+    const ai = getAI();
+    if (!ai) throw new Error("API Key missing. Please check .env file.");
 
-      Analyze the following raw intelligence text. 
+    const prompt = `
+      I have a Threat Intelligence entity extracted from a report. 
+      Name: "${entity.name}"
+      Type: "${entity.type}"
       
-      Step 1: NLP Extraction
-      Identify all relevant entities. Classify them accurately.
+      Please query your internal knowledge base to provide a detailed enrichment profile for this entity.
+      Focus on TTPs, attribution, and target sectors.
       
-      Step 2: Normalization
-      Look for synonyms. If text says "Lazarus (APT38)", extract "Lazarus" as name and "APT38" as alias.
-      
-      Step 3: Profile Enrichment Extraction
-      - Extract 'sectors': What industries are being victimized?
-      - Extract 'tools': What specific malware or utilities are mentioned?
-      
-      Step 4: Correlation
-      Identify directional relationships between these entities.
-      
-      Text to analyze:
-      """
-      ${text}
-      """
+      Rules:
+      1. If the entity is unknown to you, return a generic description stating it was not found in training data.
+      2. Be concise and technical.
     `;
 
     const response = await ai.models.generateContent({
@@ -96,8 +59,8 @@ export const analyzeThreatText = async (text: string, sourceId: string): Promise
       contents: prompt,
       config: {
         responseMimeType: "application/json",
-        responseSchema: entitySchema,
-        temperature: 0.1, // Low temperature ensures deterministic extraction
+        responseSchema: enrichmentSchema,
+        temperature: 0.2,
       },
     });
 
@@ -105,60 +68,17 @@ export const analyzeThreatText = async (text: string, sourceId: string): Promise
     if (!rawJson) throw new Error("No response from Gemini");
 
     const parsed = JSON.parse(rawJson);
-    const timestamp = new Date().toISOString();
-
-    // Transform API response to internal App types
-    const entityMap = new Map<string, string>();
     
-    const entities: Entity[] = parsed.entities.map((e: any) => {
-      const id = crypto.randomUUID();
-      entityMap.set(e.name, id);
-      
-      // Map aliases to ID for relationship resolution
-      if (e.aliases) {
-        e.aliases.forEach((alias: string) => entityMap.set(alias, id));
-      }
-
-      return {
-        id,
-        name: e.name,
-        aliases: e.aliases || [],
-        type: e.type as EntityType,
-        confidenceScore: e.confidenceScore,
-        firstSeen: timestamp,
-        lastSeen: timestamp,
-        description: e.description,
-        sectors: e.sectors || [],
-        tools: e.tools || [],
-        sources: [sourceId]
-      };
-    });
-
-    const relationships: Relationship[] = parsed.relationships
-      .map((r: any) => {
-        const sourceId = entityMap.get(r.sourceEntityName);
-        const targetId = entityMap.get(r.targetEntityName);
-        
-        if (sourceId && targetId) {
-          return {
-            source: sourceId,
-            target: targetId,
-            type: r.relationshipType,
-            weight: 1
-          };
-        }
-        return null;
-      })
-      .filter((r: Relationship | null) => r !== null);
-
     return {
-      summary: parsed.summary,
-      entities,
-      relationships
+      description: parsed.description,
+      aliases: parsed.aliases || [],
+      sectors: parsed.sectors || [],
+      tools: parsed.tools || [],
+      isEnriched: true
     };
 
   } catch (error) {
-    console.error("Error in analyzeThreatText:", error);
+    console.error("Enrichment failed:", error);
     throw error;
   }
 };

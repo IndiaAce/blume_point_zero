@@ -1,12 +1,13 @@
-import React, { useState, useCallback } from 'react';
-import { Activity, Database, Layers, Shield, Network, FileText, Terminal } from 'lucide-react';
+import React, { useState, useCallback, useEffect } from 'react';
+import { Activity, Database, Layers, Shield, Network, FileText, Terminal, Save } from 'lucide-react';
 import ForceGraph from './components/ForceGraph';
 import IngestionPanel from './components/IngestionPanel';
 import EntityDetails from './components/EntityDetails';
 import EntityLibrary from './components/EntityLibrary';
 import ThreatQuery from './components/ThreatQuery';
-import { Entity, FeedItem, Relationship, AnalysisResult, EntityType, Report } from './types';
-import { analyzeThreatText } from './services/geminiService';
+import { Entity, FeedItem, Relationship, EntityType, Report } from './types';
+import { processTextLocal, mergeKnowledgeGraph } from './services/mlEngine';
+import { enrichEntityProfile } from './services/geminiService';
 
 type ViewMode = 'GRAPH' | 'LIBRARY' | 'QUERY';
 
@@ -15,146 +16,164 @@ const App: React.FC = () => {
   const [viewMode, setViewMode] = useState<ViewMode>('GRAPH');
   const [entities, setEntities] = useState<Entity[]>([]);
   const [relationships, setRelationships] = useState<Relationship[]>([]);
-  const [reports, setReports] = useState<Report[]>([]); // Store source reports
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [reports, setReports] = useState<Report[]>([]); 
+  const [isProcessing, setIsProcessing] = useState(false);
   const [selectedEntity, setSelectedEntity] = useState<Entity | null>(null);
   const [recentActivity, setRecentActivity] = useState<string[]>([]);
 
+  // --- Persistence Logic ---
+  useEffect(() => {
+    const loadData = async () => {
+        try {
+            const response = await fetch('/api/data');
+            if (response.ok) {
+                const data = await response.json();
+                if (data.entities) setEntities(data.entities);
+                if (data.relationships) setRelationships(data.relationships);
+                if (data.reports) setReports(data.reports);
+                setRecentActivity(prev => ["System: Persistence data loaded.", ...prev]);
+            }
+        } catch (e) {
+            console.error("Failed to load data", e);
+            setRecentActivity(prev => ["System: Could not connect to storage server.", ...prev]);
+        }
+    };
+    loadData();
+  }, []);
+
+  const saveWorkspace = async () => {
+      try {
+          const payload = { entities, relationships, reports };
+          const res = await fetch('/api/data', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload)
+          });
+          if (res.ok) {
+             setRecentActivity(prev => [`System: Workspace saved to disk.`, ...prev]);
+          } else {
+             throw new Error("Save failed");
+          }
+      } catch (e) {
+          setRecentActivity(prev => [`Error: Save failed. Is Docker running?`, ...prev]);
+      }
+  };
+
   // --- Logic ---
 
+  // 1. LOCAL INGESTION PIPELINE
   const handleIngest = useCallback(async (items: FeedItem[]) => {
-    setIsAnalyzing(true);
+    setIsProcessing(true);
     
+    let incomingEntities: Entity[] = [];
+    let incomingRels: Relationship[] = [];
+
     for (const item of items) {
         setRecentActivity(prev => [`Ingesting: ${item.title}...`, ...prev]);
 
-        try {
-          // Create Report Node Metadata
-          const reportId = crypto.randomUUID();
-          const newReport: Report = {
-              id: reportId,
-              title: item.title,
-              source: item.sourceName,
-              timestamp: item.timestamp,
-              url: item.url,
-              summary: item.content.substring(0, 100) + "..."
-          };
-          setReports(prev => [newReport, ...prev]);
+        // A. Create Report Node
+        const reportId = crypto.randomUUID();
+        const newReport: Report = {
+            id: reportId,
+            title: item.title,
+            source: item.sourceName,
+            timestamp: item.timestamp,
+            url: item.url,
+            summary: item.content.substring(0, 100) + "..."
+        };
+        setReports(prev => [newReport, ...prev]);
 
-          // Create Report Entity for Graph
-          const reportEntity: Entity = {
-              id: reportId,
-              name: `REPORT: ${item.title}`,
-              type: EntityType.REPORT,
-              confidenceScore: 1,
-              firstSeen: item.timestamp,
-              lastSeen: item.timestamp,
-              aliases: [],
-              sources: [item.id],
-              description: `Source: ${item.sourceName}\nURL: ${item.url}`
-          };
+        const reportEntity: Entity = {
+            id: reportId,
+            name: `REPORT: ${item.title}`,
+            type: EntityType.REPORT,
+            confidenceScore: 1,
+            firstSeen: item.timestamp,
+            lastSeen: item.timestamp,
+            aliases: [],
+            sources: [item.id],
+            description: `Source: ${item.sourceName}\nURL: ${item.url}`,
+            isEnriched: false,
+            isValidated: true
+        };
+        incomingEntities.push(reportEntity);
 
-          // 1. NLP/NER Extraction Phase
-          const result: AnalysisResult = await analyzeThreatText(item.content, item.id);
-          
-          setRecentActivity(prev => [`NER Complete: Identified ${result.entities.length} entities in "${item.title}"`, ...prev]);
+        // B. Run Local ML Engine (Cortex)
+        const result = processTextLocal(item.content, reportId);
+        
+        setRecentActivity(prev => [`Local ML: Extracted ${result.entities.length} entities from text.`, ...prev]);
 
-          // 2. Profile Enrichment & Normalization Engine
-          setEntities(prevEntities => {
-            const newEntities = [...prevEntities];
-            
-            // Add Report Node if not exists
-            if (!newEntities.find(e => e.id === reportId)) {
-                newEntities.push(reportEntity);
-            }
-
-            const entityIdMap = new Map<string, string>(); // Map New_ID -> Existing_ID
-
-            result.entities.forEach(incoming => {
-              // Normalization Logic: Fuzzy match against Name and Aliases
-              const existingIndex = newEntities.findIndex(e => {
-                const nameMatch = e.name.toLowerCase() === incoming.name.toLowerCase();
-                const aliasMatch = e.aliases?.some(a => a.toLowerCase() === incoming.name.toLowerCase()) || 
-                                   incoming.aliases?.some(a => a.toLowerCase() === e.name.toLowerCase());
-                const crossAliasMatch = e.aliases?.some(ea => incoming.aliases?.some(ia => ia.toLowerCase() === ea.toLowerCase()));
-                
-                return (nameMatch || aliasMatch || crossAliasMatch) && e.type === incoming.type;
-              });
-
-              if (existingIndex >= 0) {
-                // --- ENRICHMENT PHASE ---
-                const existing = newEntities[existingIndex];
-                entityIdMap.set(incoming.id, existing.id);
-                
-                const mergedAliases = [...new Set([...(existing.aliases || []), ...(incoming.aliases || [])])];
-                const mergedSectors = [...new Set([...(existing.sectors || []), ...(incoming.sectors || [])])];
-                const mergedTools = [...new Set([...(existing.tools || []), ...(incoming.tools || [])])];
-                
-                let newDescription = existing.description || "";
-                if (incoming.description && !newDescription.includes(incoming.description)) {
-                  const dateStr = new Date().toLocaleDateString();
-                  newDescription += `\n\n[Intel Update ${dateStr}]: ${incoming.description}`;
-                }
-
-                newEntities[existingIndex] = {
-                  ...existing,
-                  aliases: mergedAliases,
-                  sectors: mergedSectors,
-                  tools: mergedTools,
-                  lastSeen: new Date().toISOString(),
-                  sources: [...new Set([...existing.sources, ...incoming.sources])],
-                  description: newDescription,
-                  confidenceScore: Math.max(existing.confidenceScore, incoming.confidenceScore)
-                };
-              } else {
-                // --- NEW PROFILE CREATION ---
-                newEntities.push(incoming);
-                entityIdMap.set(incoming.id, incoming.id);
-              }
+        incomingEntities = [...incomingEntities, ...result.entities];
+        
+        // C. Link everything to Report
+        result.entities.forEach(e => {
+            incomingRels.push({
+                source: reportId,
+                target: e.id,
+                type: "MENTIONS",
+                weight: 1
             });
-
-            // 3. Relationship Correlation
-            setRelationships(prevRels => {
-              const validRelationships = result.relationships.map(r => {
-                 const newSource = entityIdMap.get(r.source) || r.source;
-                 const newTarget = entityIdMap.get(r.target) || r.target;
-                 if (newSource === newTarget) return null; 
-                 return { ...r, source: newSource, target: newTarget };
-              }).filter(Boolean) as Relationship[];
-
-              // Add Links from Report -> Entities
-              result.entities.forEach(e => {
-                 const targetId = entityIdMap.get(e.id) || e.id;
-                 validRelationships.push({
-                     source: reportId,
-                     target: targetId,
-                     type: "MENTIONS",
-                     weight: 1
-                 });
-              });
-
-              // Deduplicate
-              const mergedRels = [...prevRels];
-              validRelationships.forEach(newRel => {
-                const exists = mergedRels.some(
-                  r => r.source === newRel.source && r.target === newRel.target && r.type === newRel.type
-                );
-                if (!exists) mergedRels.push(newRel);
-              });
-              
-              return mergedRels;
-            });
-
-            return newEntities;
-          });
-
-        } catch (error) {
-          console.error("Ingestion failed", error);
-          setRecentActivity(prev => [`Error: Failed to analyze "${item.title}"`, ...prev]);
-        }
+        });
+        incomingRels = [...incomingRels, ...result.relationships];
     }
-    setIsAnalyzing(false);
-  }, []);
+
+    // D. Normalize and Merge
+    setEntities(prev => {
+        const { merged, map } = mergeKnowledgeGraph(prev, incomingEntities);
+        
+        // Remap relationships to merged IDs
+        setRelationships(prevRels => {
+             const updatedIncomingRels = incomingRels.map(r => ({
+                 ...r,
+                 source: map.get(r.source) || r.source,
+                 target: map.get(r.target) || r.target
+             })).filter(r => r.source !== r.target);
+
+             // Merge and dedupe relationships
+             const combined = [...prevRels, ...updatedIncomingRels];
+             // (Simple dedupe by stringifying)
+             const unique = Array.from(new Set(combined.map(r => JSON.stringify(r)))).map(s => JSON.parse(s));
+             return unique;
+        });
+
+        return merged;
+    });
+
+    setIsProcessing(false);
+    // Trigger a save after ingestion
+    setTimeout(saveWorkspace, 1000);
+  }, [entities]); // Depend on entities for merge logic
+
+  // 2. MANUAL ENRICHMENT (The AI Button)
+  const handleEnrichment = async (entity: Entity) => {
+      setRecentActivity(prev => [`AI: Enriching profile for ${entity.name}...`, ...prev]);
+      try {
+          const updates = await enrichEntityProfile(entity);
+          
+          setEntities(prev => prev.map(e => {
+              if (e.id === entity.id) {
+                  return { 
+                      ...e, 
+                      ...updates,
+                      aliases: [...new Set([...e.aliases, ...(updates.aliases || [])])],
+                      sectors: [...new Set([...(e.sectors || []), ...(updates.sectors || [])])],
+                      tools: [...new Set([...(e.tools || []), ...(updates.tools || [])])],
+                  };
+              }
+              return e;
+          }));
+          
+          // Update the selected view immediately
+          if (selectedEntity && selectedEntity.id === entity.id) {
+              setSelectedEntity(prev => prev ? ({ ...prev, ...updates, isEnriched: true }) : null);
+          }
+
+          setRecentActivity(prev => [`AI: Enrichment complete for ${entity.name}.`, ...prev]);
+          saveWorkspace();
+      } catch (e) {
+          setRecentActivity(prev => [`Error: Enrichment failed.`, ...prev]);
+      }
+  };
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-cyber-dark text-gray-100 font-sans selection:bg-cyber-accent selection:text-white">
@@ -201,9 +220,15 @@ const App: React.FC = () => {
             </div>
           </div>
           <div className="flex items-center gap-4 text-sm">
+            <button 
+              onClick={saveWorkspace}
+              className="flex items-center gap-2 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 rounded border border-gray-700 text-xs text-gray-300 transition-colors active:scale-95"
+            >
+                <Save className="w-3 h-3" /> Save Workspace
+            </button>
             <div className="flex items-center gap-2 text-gray-400">
               <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
-              Engine Online
+              Cortex Local Engine Online
             </div>
           </div>
         </header>
@@ -211,9 +236,9 @@ const App: React.FC = () => {
         {/* Workspace */}
         <div className="flex-1 flex overflow-hidden">
           
-          {/* Feed & Controls Column (Only show in Graph Mode or if user wants to ingest everywhere - let's keep it always visible for now as a dock) */}
+          {/* Feed & Controls Column */}
           <div className="w-96 bg-gray-900 border-r border-gray-800 flex flex-col z-10 shadow-xl">
-            <IngestionPanel onIngest={handleIngest} isAnalyzing={isAnalyzing} />
+            <IngestionPanel onIngest={handleIngest} isAnalyzing={isProcessing} />
             
             {/* Activity Log */}
             <div className="flex-1 overflow-hidden flex flex-col p-4">
@@ -294,6 +319,7 @@ const App: React.FC = () => {
           relationships={relationships} 
           allEntities={entities}
           onClose={() => setSelectedEntity(null)}
+          onEnrich={handleEnrichment}
         />
       )}
 

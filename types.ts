@@ -15,7 +15,7 @@ export interface Entity {
   name: string;
   aliases: string[]; // Alternative names for normalization (e.g., APT28, Fancy Bear)
   type: EntityType;
-  confidenceScore: number;
+  confidenceScore: number; // 0-1 Calculated by internal ML engine
   firstSeen: string;
   lastSeen: string;
   description?: string;
@@ -23,6 +23,10 @@ export interface Entity {
   sectors?: string[]; // e.g. Financial, Defense, Healthcare
   tools?: string[]; // e.g. Cobalt Strike, Mimikatz
   sources: string[]; // IDs of feeds/articles
+  
+  // ML Status Flags
+  isEnriched: boolean; // True if Gemini has processed this specific node
+  isValidated: boolean; // True if human has confirmed this node
 }
 
 export interface Report {
